@@ -18,10 +18,11 @@ from typing import Any
 import voluptuous as vol
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import EVENT_HOMEASSISTANT_STARTED, Platform
-from homeassistant.core import Event, HomeAssistant, ServiceCall
+from homeassistant.const import Platform
+from homeassistant.core import HomeAssistant, ServiceCall, callback
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.helpers.start import async_at_started
 
 try:
     from homeassistant.components.frontend import async_register_built_in_panel
@@ -265,17 +266,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await asyncio.sleep(RESUME_DELAY_SECONDS)
         await coordinator.async_resume_interrupted()
 
-    def _start_resume(_event: Event | None = None) -> None:
+    @callback
+    def _start_resume(_hass: HomeAssistant) -> None:
         entry.async_create_background_task(
             hass, _async_resume_interrupted(), f"{DOMAIN} resume interrupted runs"
         )
 
-    if hass.is_running:
-        _start_resume()
-    else:
-        entry.async_on_unload(
-            hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _start_resume)
-        )
+    # Runs now if HA has already started (a reload), otherwise once it has.
+    entry.async_on_unload(async_at_started(hass, _start_resume))
 
     _LOGGER.info(
         "Smarter.Homes Update Manager v%s set up successfully with %d queue(s)",
