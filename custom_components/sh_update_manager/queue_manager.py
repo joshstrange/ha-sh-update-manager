@@ -776,6 +776,8 @@ class NamedQueue:
         if self._state == QUEUE_STATE_PAUSED:
             self._state = QUEUE_STATE_RUNNING
             self._notify()
+            if self._task is None or self._task.done():
+                await self.async_start()
 
     async def async_skip_current(self) -> None:
         if self._current_item:
@@ -864,7 +866,8 @@ class NamedQueue:
 
     async def _process_sequential(self) -> None:
         for item in self._items:
-            if self._state != QUEUE_STATE_RUNNING:
+            # Paused falls through to the wait below; only a stop ends the run.
+            if self._state not in (QUEUE_STATE_RUNNING, QUEUE_STATE_PAUSED):
                 break
             if item.status != ITEM_STATUS_PENDING:
                 continue

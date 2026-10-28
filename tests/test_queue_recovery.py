@@ -54,6 +54,7 @@ class FakeInstaller:
     def __init__(self, hass: HomeAssistant) -> None:
         self.hass = hass
         self.hang: set[str] = set()
+        self.gates: dict[str, asyncio.Event] = {}
         self.calls: list[str] = []
         self.started: dict[str, asyncio.Event] = {e: asyncio.Event() for e in ENTITIES}
 
@@ -64,6 +65,8 @@ class FakeInstaller:
         for entity_id in entity_ids:
             self.calls.append(entity_id)
             self.started[entity_id].set()
+            if entity_id in self.gates:
+                await self.gates[entity_id].wait()
             if entity_id in self.hang:
                 # Like a Z-Wave install to a sleeping device: never returns.
                 await asyncio.Event().wait()
@@ -245,3 +248,28 @@ async def test_progress_is_saved_without_a_service_call(
 
     saved = hass_storage[STORAGE_KEY]["data"][queue.slug]
     assert [i["status"] for i in saved["items"]] == [ITEM_STATUS_COMPLETED] * 2
+
+
+async def test_pause_holds_the_run_and_resume_continues_it(
+    hass: HomeAssistant, installer: FakeInstaller
+) -> None:
+    installer.gates[ENTITIES[0]] = asyncio.Event()
+    queue = NamedQueue(hass, _queue_config(install_timeout=3600))
+
+    await queue.async_start()
+    async with asyncio.timeout(5):
+        await installer.started[ENTITIES[0]].wait()
+    await queue.async_pause()
+    installer.gates[ENTITIES[0]].set()
+    async with asyncio.timeout(5):
+        while _item(queue, ENTITIES[0]).status != ITEM_STATUS_COMPLETED:
+            await asyncio.sleep(0.05)
+    await asyncio.sleep(0.3)
+
+    # Paused between items: the worker waits instead of exiting.
+    assert _item(queue, ENTITIES[1]).status == ITEM_STATUS_PENDING
+    assert queue._task is not None and not queue._task.done()
+
+    await queue.async_resume()
+    await _wait_idle(queue)
+    assert _item(queue, ENTITIES[1]).status == ITEM_STATUS_COMPLETED
