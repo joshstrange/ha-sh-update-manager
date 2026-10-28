@@ -14,6 +14,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN, SW_VERSION
+from .device_link import hub_link
 from .queue_manager import QueueCoordinator, NamedQueue
 
 
@@ -55,7 +56,7 @@ def _queue_device_info(entry: ConfigEntry, queue: NamedQueue) -> dict:
         "manufacturer": "Smarter Homes LLC",
         "model": "Update Queue",
         "sw_version": SW_VERSION,
-        "via_device": (DOMAIN, entry.entry_id),
+        **hub_link(entry),
     }
 
 
