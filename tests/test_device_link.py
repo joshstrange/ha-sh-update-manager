@@ -25,11 +25,8 @@ async def test_queue_devices_link_to_hub(hass: HomeAssistant) -> None:
     await hass.async_block_till_done()
 
     registry = dr.async_get(hass)
-    hub = registry.async_get_device(identifiers={(DOMAIN, entry.entry_id)})
-    assert hub is not None
-    queue_devices = [
-        d for d in dr.async_entries_for_config_entry(registry, entry.entry_id)
-        if d.id != hub.id
-    ]
+    devices = dr.async_entries_for_config_entry(registry, entry.entry_id)
+    hub = next(d for d in devices if (DOMAIN, entry.entry_id) in d.identifiers)
+    queue_devices = [d for d in devices if d.id != hub.id]
     assert len(queue_devices) == len(DEFAULT_QUEUES)
     assert all(d.via_device_id == hub.id for d in queue_devices)
