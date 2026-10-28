@@ -136,6 +136,7 @@ class QueueStatusSensor(SensorEntity):
             "match_type": self._queue.match_type,
             "match_value": self._queue.match_value,
             "exclude_pattern": self._queue.exclude_pattern,
+            "resume_after_restart": self._queue.resume_after_restart,
         }
         if self._queue.current_item:
             attrs["current_item"] = self._queue.current_item.entity_id

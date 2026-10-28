@@ -190,6 +190,13 @@ add_queue:
       default: true
       selector:
         boolean:
+    resume_after_restart:
+      name: Resume After Restart
+      description: Restart a run that was interrupted by a Home Assistant restart or reload, once Home Assistant has started.
+      required: false
+      default: false
+      selector:
+        boolean:
     install_delay:
       name: Install Delay
       description: Seconds to wait between installs (0-300).
@@ -307,6 +314,11 @@ edit_queue:
         boolean:
     skip_unavailable:
       name: Skip Unavailable
+      required: false
+      selector:
+        boolean:
+    resume_after_restart:
+      name: Resume After Restart
       required: false
       selector:
         boolean:

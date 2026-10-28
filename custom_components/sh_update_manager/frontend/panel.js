@@ -234,6 +234,7 @@ class SHUpdateManagerPanel extends LitElement {
       history_count: 25,
       priority: 50,
       exclude_pattern: "",
+      resume_after_restart: false,
     };
   }
 
@@ -290,6 +291,7 @@ class SHUpdateManagerPanel extends LitElement {
           match_type: attrs.match_type || "",
           match_value: attrs.match_value || "",
           exclude_pattern: attrs.exclude_pattern || "",
+          resume_after_restart: attrs.resume_after_restart === true,
           pending: pendingSensor ? parseInt(pendingSensor.state) || 0 : 0,
           pending_summary: pendingSensor?.attributes?.summary || "",
           completed: pendingSensor?.attributes?.completed || 0,
@@ -362,6 +364,7 @@ class SHUpdateManagerPanel extends LitElement {
       history_count: 25,
       priority: queue.priority || 50,
       exclude_pattern: queue.exclude_pattern || "",
+      resume_after_restart: queue.resume_after_restart === true,
     };
     this._editingQueue = queue;
     this._showForm = "edit";
@@ -402,6 +405,7 @@ class SHUpdateManagerPanel extends LitElement {
         history_count: parseInt(fd.history_count) || 25,
         priority: parseInt(fd.priority) || 50,
         exclude_pattern: fd.exclude_pattern || "",
+        resume_after_restart: fd.resume_after_restart === true,
       });
     } else if (this._showForm === "edit" && this._editingQueue) {
       const data = { queue_name: this._editingQueue.name };
@@ -415,6 +419,7 @@ class SHUpdateManagerPanel extends LitElement {
       data.battery_handling = fd.battery_handling;
       data.priority = parseInt(fd.priority) || 50;
       data.exclude_pattern = fd.exclude_pattern || "";
+      data.resume_after_restart = fd.resume_after_restart === true;
       await this._callService("edit_queue", data);
     }
     this._closeForm();
@@ -481,6 +486,7 @@ class SHUpdateManagerPanel extends LitElement {
           <dt>Mode</dt><dd>${queue.exec_mode}</dd>
           <dt>Trigger</dt><dd>${queue.trigger_mode}</dd>
           <dt>Battery</dt><dd>${queue.battery_handling}</dd>
+          <dt>Resume</dt><dd>${queue.resume_after_restart ? "after restart" : "manual"}</dd>
           <dt>Match</dt><dd>${queue.match_type}: ${queue.match_value || "(all)"}${queue.exclude_pattern ? html` <span style="color:var(--error-color,#db4437)">excl: ${queue.exclude_pattern}</span>` : ""}</dd>
           <dt>Pending</dt><dd>${queue.pending_summary || queue.pending}</dd>
           <dt>Last Run</dt><dd>${queue.last_run_result}</dd>
@@ -689,6 +695,18 @@ class SHUpdateManagerPanel extends LitElement {
               <input type="number" min="1" max="100" .value=${String(fd.priority)}
                 @input=${(e) => this._updateFormField("priority", e.target.value)} />
               <div class="hint">Lower = runs first when running all queues</div>
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label>After a Restart</label>
+              <select .value=${fd.resume_after_restart ? "true" : "false"}
+                @change=${(e) => this._updateFormField("resume_after_restart", e.target.value === "true")}>
+                <option value="false">Stay idle until started</option>
+                <option value="true">Resume an interrupted run</option>
+              </select>
+              <div class="hint">What to do with a run that a Home Assistant restart cut short</div>
             </div>
           </div>
 

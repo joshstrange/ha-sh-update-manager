@@ -59,11 +59,14 @@ from .const import (
     CONF_MAX_RETRIES,
     CONF_HISTORY_COUNT,
     CONF_PRIORITY,
+    CONF_RESUME_AFTER_RESTART,
     DEFAULT_INSTALL_DELAY,
     DEFAULT_INSTALL_TIMEOUT,
     DEFAULT_MAX_RETRIES,
     DEFAULT_HISTORY_COUNT,
     DEFAULT_PRIORITY,
+    DEFAULT_RESUME_AFTER_RESTART,
+    SAVE_DELAY_SECONDS,
     STORAGE_KEY,
     STORAGE_VERSION,
 )
@@ -195,6 +198,13 @@ class NamedQueue:
         self._state = QUEUE_STATE_IDLE
         self._current_item: QueueItem | None = None
         self._task: asyncio.Task | None = None
+        # The install currently in flight (sequential mode), so Skip can
+        # cancel it instead of only relabelling the item.
+        self._item_task: asyncio.Task | None = None
+        # Set when a run was cut short by a restart or reload, so setup can
+        # resume it (if resume_after_restart is on) once HA has started.
+        self._interrupted = False
+        self._resume_pending = False
         self._last_success: str | None = None
         self._last_failure: str | None = None
         self._completed_count = 0
@@ -258,6 +268,10 @@ class NamedQueue:
     @property
     def install_timeout(self) -> int:
         return self.config.get(CONF_INSTALL_TIMEOUT, DEFAULT_INSTALL_TIMEOUT)
+
+    @property
+    def resume_after_restart(self) -> bool:
+        return self.config.get(CONF_RESUME_AFTER_RESTART, DEFAULT_RESUME_AFTER_RESTART)
 
     @property
     def max_retries(self) -> int:
@@ -371,6 +385,7 @@ class NamedQueue:
             "config": self.config,
             "items": [i.to_dict() for i in self._items],
             "state": self._state,
+            "interrupted": self._interrupted or self._state == QUEUE_STATE_RUNNING,
             "last_success": self._last_success,
             "last_failure": self._last_failure,
             "completed_count": self._completed_count,
@@ -383,6 +398,28 @@ class NamedQueue:
     def load_state(self, data: dict[str, Any]) -> None:
         self._items = [QueueItem.from_dict(d) for d in data.get("items", [])]
         self._state = data.get("state", QUEUE_STATE_IDLE)
+        # No worker task survives a restart or reload, so a saved
+        # running/paused state is stale: left as-is the queue reports
+        # "running" forever and Start ignores it. Load it as idle and put
+        # any item that was mid-install back to pending so it is retried
+        # (the next scan drops it if the update actually landed).
+        self._resume_pending = (
+            self._state == QUEUE_STATE_RUNNING or data.get("interrupted", False)
+        )
+        if self._state in (QUEUE_STATE_RUNNING, QUEUE_STATE_PAUSED):
+            _LOGGER.info(
+                "Queue '%s': was %s when last saved; no run survives a restart, "
+                "loading as idle", self.name, self._state,
+            )
+            self._state = QUEUE_STATE_IDLE
+        for item in self._items:
+            if item.status == ITEM_STATUS_INSTALLING:
+                item.status = ITEM_STATUS_PENDING
+                item.retries = 0
+                item.error = None
+                item.started_at = None
+                item.completed_at = None
+                item.duration = None
         self._last_success = data.get("last_success")
         self._last_failure = data.get("last_failure")
         self._completed_count = data.get("completed_count", 0)
@@ -675,7 +712,12 @@ class NamedQueue:
 
     async def async_start(self) -> None:
         if self._state == QUEUE_STATE_RUNNING:
-            return
+            if self._task is not None and not self._task.done():
+                return
+            _LOGGER.warning(
+                "Queue '%s': marked running but has no worker; starting a new run",
+                self.name,
+            )
         await self.async_scan()
         runnable = [i for i in self._items if i.status == ITEM_STATUS_PENDING]
         if not runnable:
@@ -687,7 +729,24 @@ class NamedQueue:
         self._current_run.started = datetime.now()
         self._current_run.total = len(runnable)
         self._notify()
-        self._task = self.hass.async_create_task(self._async_process())
+        self._task = self.hass.async_create_background_task(
+            self._async_process(), f"{DOMAIN} queue {self.name}"
+        )
+
+    async def async_resume_if_interrupted(self) -> None:
+        """Restart a run that a restart or reload cut short, if configured."""
+        if not self._resume_pending:
+            return
+        self._resume_pending = False
+        if not self.resume_after_restart:
+            _LOGGER.info(
+                "Queue '%s': a run was interrupted by a restart; "
+                "resume_after_restart is off, so it stays idle until started",
+                self.name,
+            )
+            return
+        _LOGGER.info("Queue '%s': resuming a run interrupted by a restart", self.name)
+        await self.async_start()
 
     async def async_stop(self) -> None:
         self._state = QUEUE_STATE_STOPPED
@@ -698,6 +757,13 @@ class NamedQueue:
             except asyncio.CancelledError:
                 pass
         self._current_item = None
+        # An install cut short by Stop goes back to pending so the next
+        # Start retries it, rather than sitting at "installing" for good.
+        for item in self._items:
+            if item.status == ITEM_STATUS_INSTALLING:
+                item.status = ITEM_STATUS_PENDING
+                item.retries = 0
+                item.started_at = None
         self._finalize_run()
         self._notify()
 
@@ -718,6 +784,8 @@ class NamedQueue:
             if self._current_run:
                 self._current_run.skipped += 1
             self._current_item = None
+            if self._item_task is not None and not self._item_task.done():
+                self._item_task.cancel()
             self._notify()
 
     async def async_clear(self) -> None:
@@ -781,7 +849,10 @@ class NamedQueue:
             else:
                 await self._process_sequential()
         except asyncio.CancelledError:
-            pass
+            if self._state == QUEUE_STATE_RUNNING:
+                # Cancelled without Stop being pressed (Stop sets STOPPED
+                # first): HA is shutting down or the entry is reloading.
+                self._interrupted = True
         except Exception:
             _LOGGER.exception("Queue '%s': error", self.name)
         finally:
@@ -803,7 +874,19 @@ class NamedQueue:
                 break
             self._current_item = item
             self._notify()
-            success = await self._install_item(item)
+            self._item_task = self.hass.async_create_background_task(
+                self._install_item(item), f"{DOMAIN} install {item.entity_id}"
+            )
+            try:
+                success = await self._item_task
+            except asyncio.CancelledError:
+                current = asyncio.current_task()
+                if current is not None and current.cancelling():
+                    raise  # the queue itself was stopped or shut down
+                # Only the install was cancelled: Skip was pressed.
+                success = True
+            finally:
+                self._item_task = None
             self._current_item = None
             if not success and self.stop_on_failure:
                 self._state = QUEUE_STATE_STOPPED
@@ -821,15 +904,34 @@ class NamedQueue:
         item.status = ITEM_STATUS_INSTALLING
         item.started_at = datetime.now()
         self._notify()
+        loop = asyncio.get_running_loop()
         for attempt in range(self.max_retries + 1):
             item.retries = attempt
+            # install_timeout bounds the whole attempt. A blocking
+            # update.install can itself wait indefinitely: Z-Wave JS does not
+            # return until the device reports the firmware update finished,
+            # which for a sleeping battery device may be days away.
+            deadline = loop.time() + self.install_timeout
             try:
-                await self.hass.services.async_call(
-                    "update", "install",
-                    {"entity_id": item.entity_id},
-                    blocking=True,
+                async with asyncio.timeout_at(deadline):
+                    await self.hass.services.async_call(
+                        "update", "install",
+                        {"entity_id": item.entity_id},
+                        blocking=True,
+                    )
+            except TimeoutError:
+                # Not retried: the device most likely still has the update
+                # pending and would only reject a second install.
+                item.error = (
+                    f"No result from the device after {self.install_timeout}s "
+                    "(it may still apply the update when it next wakes)"
                 )
-                if await self._wait_for_completion(item):
+                _LOGGER.warning("Queue '%s': %s: %s", self.name, item.entity_id, item.error)
+                break
+            except Exception as exc:
+                item.error = str(exc)
+            else:
+                if await self._wait_for_completion(item, deadline):
                     item.status = ITEM_STATUS_COMPLETED
                     item.completed_at = datetime.now()
                     if item.started_at:
@@ -841,8 +943,6 @@ class NamedQueue:
                     self._last_success = item.entity_id
                     self._notify()
                     return True
-            except Exception as exc:
-                item.error = str(exc)
             if attempt < self.max_retries:
                 await asyncio.sleep(5)
         item.status = ITEM_STATUS_FAILED
@@ -857,9 +957,9 @@ class NamedQueue:
         self._notify()
         return False
 
-    async def _wait_for_completion(self, item: QueueItem) -> bool:
-        elapsed = 0
-        while elapsed < self.install_timeout:
+    async def _wait_for_completion(self, item: QueueItem, deadline: float) -> bool:
+        loop = asyncio.get_running_loop()
+        while loop.time() < deadline:
             state = self.hass.states.get(item.entity_id)
             if state is None:
                 return True
@@ -868,11 +968,12 @@ class NamedQueue:
                 if state.state != STATE_ON:
                     return True
             await asyncio.sleep(5)
-            elapsed += 5
         item.error = f"Timed out after {self.install_timeout}s"
         return False
 
     async def async_shutdown(self) -> None:
+        if self._state in (QUEUE_STATE_RUNNING, QUEUE_STATE_PAUSED):
+            self._interrupted = True
         if self._task and not self._task.done():
             self._task.cancel()
             try:
@@ -892,7 +993,9 @@ class QueueCoordinator:
         self._queues: list[NamedQueue] = []
         self._listeners: list[Any] = []
         for qc in queues_config:
-            self._queues.append(NamedQueue(hass, qc))
+            q = NamedQueue(hass, qc)
+            q.register_listener(self._schedule_save)
+            self._queues.append(q)
 
     @property
     def queues(self) -> list[NamedQueue]:
@@ -917,6 +1020,7 @@ class QueueCoordinator:
 
     def add_queue(self, config: dict[str, Any]) -> NamedQueue:
         q = NamedQueue(self.hass, config)
+        q.register_listener(self._schedule_save)
         self._queues.append(q)
         self._notify_global()
         return q
@@ -976,9 +1080,22 @@ class QueueCoordinator:
                 if qdata:
                     q.load_state(qdata)
 
+    def _data_to_save(self) -> dict[str, Any]:
+        return {q.slug: q.to_dict() for q in self._queues}
+
+    @callback
+    def _schedule_save(self) -> None:
+        # Persist progress as items move, not only on service calls.
+        # Store flushes pending delayed saves when HA shuts down, so the
+        # stored state reflects where a run actually got to.
+        self._store.async_delay_save(self._data_to_save, SAVE_DELAY_SECONDS)
+
     async def async_save(self) -> None:
-        data = {q.slug: q.to_dict() for q in self._queues}
-        await self._store.async_save(data)
+        await self._store.async_save(self._data_to_save())
+
+    async def async_resume_interrupted(self) -> None:
+        for q in self.queues_by_priority:
+            await q.async_resume_if_interrupted()
 
     async def async_shutdown(self) -> None:
         for q in self._queues:

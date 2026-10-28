@@ -9,6 +9,7 @@ by Smarter Homes LLC — smarter.homes
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from datetime import timedelta
@@ -17,8 +18,8 @@ from typing import Any
 import voluptuous as vol
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.const import EVENT_HOMEASSISTANT_STARTED, Platform
+from homeassistant.core import Event, HomeAssistant, ServiceCall
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.event import async_track_time_interval
 
@@ -55,6 +56,8 @@ from .const import (
     DEFAULT_HISTORY_COUNT,
     DEFAULT_PRIORITY,
     DEFAULT_SCAN_INTERVAL_MINUTES,
+    DEFAULT_RESUME_AFTER_RESTART,
+    RESUME_DELAY_SECONDS,
     EXEC_MODES_LIST,
     TRIGGER_MODES_LIST,
     BATTERY_MODES_LIST,
@@ -255,6 +258,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # --- 8. Register update listener ---
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
 
+    # --- 9. Resume runs interrupted by a restart or reload ---
+    async def _async_resume_interrupted() -> None:
+        # Give integrations such as Z-Wave JS time to settle before the
+        # resumed run rescans and starts installing.
+        await asyncio.sleep(RESUME_DELAY_SECONDS)
+        await coordinator.async_resume_interrupted()
+
+    def _start_resume(_event: Event | None = None) -> None:
+        entry.async_create_background_task(
+            hass, _async_resume_interrupted(), f"{DOMAIN} resume interrupted runs"
+        )
+
+    if hass.is_running:
+        _start_resume()
+    else:
+        entry.async_on_unload(
+            hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _start_resume)
+        )
+
     _LOGGER.info(
         "Smarter.Homes Update Manager v%s set up successfully with %d queue(s)",
         SW_VERSION,
@@ -346,6 +368,9 @@ def _register_services(hass: HomeAssistant, coordinator: QueueCoordinator) -> No
             "history_count": call.data.get("history_count", DEFAULT_HISTORY_COUNT),
             "priority": call.data.get("priority", DEFAULT_PRIORITY),
             "exclude_pattern": call.data.get("exclude_pattern", ""),
+            "resume_after_restart": call.data.get(
+                "resume_after_restart", DEFAULT_RESUME_AFTER_RESTART
+            ),
         }
         coordinator.add_queue(new_config)
         # Persist to config entry so it survives restarts
@@ -361,7 +386,7 @@ def _register_services(hass: HomeAssistant, coordinator: QueueCoordinator) -> No
                      "trigger_mode", "battery_handling", "stop_on_failure",
                      "skip_unavailable", "install_delay", "install_timeout",
                      "max_retries", "history_count", "priority",
-                     "exclude_pattern"):
+                     "exclude_pattern", "resume_after_restart"):
             if key in call.data:
                 # Map new_name -> name for the config dict
                 config_key = "name" if key == "new_name" else key
@@ -400,6 +425,9 @@ def _register_services(hass: HomeAssistant, coordinator: QueueCoordinator) -> No
         vol.Optional("priority", default=DEFAULT_PRIORITY): vol.All(
             vol.Coerce(int), vol.Range(min=1, max=100)),
         vol.Optional("exclude_pattern", default=""): cv.string,
+        vol.Optional(
+            "resume_after_restart", default=DEFAULT_RESUME_AFTER_RESTART
+        ): cv.boolean,
     })
 
     EDIT_QUEUE_SCHEMA = vol.Schema({
@@ -418,6 +446,7 @@ def _register_services(hass: HomeAssistant, coordinator: QueueCoordinator) -> No
         vol.Optional("history_count"): vol.All(vol.Coerce(int), vol.Range(min=1, max=100)),
         vol.Optional("priority"): vol.All(vol.Coerce(int), vol.Range(min=1, max=100)),
         vol.Optional("exclude_pattern"): cv.string,
+        vol.Optional("resume_after_restart"): cv.boolean,
     })
 
     hass.services.async_register(DOMAIN, SERVICE_SCAN_ALL, handle_scan_all)

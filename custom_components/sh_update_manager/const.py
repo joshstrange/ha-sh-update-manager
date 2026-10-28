@@ -18,6 +18,9 @@ DEFAULT_MAX_RETRIES = 2
 DEFAULT_HISTORY_COUNT = 25  # past runs to keep per queue
 DEFAULT_PRIORITY = 50  # middle of 1-100 range
 DEFAULT_SCAN_INTERVAL_MINUTES = 0  # 0 = disabled (manual scans only)
+DEFAULT_RESUME_AFTER_RESTART = False  # restart an interrupted run on startup
+RESUME_DELAY_SECONDS = 60  # settle time after HA start before resuming
+SAVE_DELAY_SECONDS = 5  # debounce for persisting queue progress
 
 # ---------------------------------------------------------------------------
 # Queue states
@@ -256,6 +259,7 @@ CONF_MAX_RETRIES = "max_retries"
 CONF_HISTORY_COUNT = "history_count"
 CONF_PRIORITY = "priority"
 CONF_EXCLUDE_PATTERN = "exclude_pattern"
+CONF_RESUME_AFTER_RESTART = "resume_after_restart"
 
 # Integration-level (global) config keys
 CONF_SCAN_INTERVAL_MINUTES = "scan_interval_minutes"
