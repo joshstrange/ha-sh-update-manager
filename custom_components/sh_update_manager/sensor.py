@@ -17,6 +17,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN, SW_VERSION
+from .device_link import hub_link
 from .queue_manager import QueueCoordinator, NamedQueue
 
 
@@ -109,7 +110,7 @@ class QueueStatusSensor(SensorEntity):
             "manufacturer": "Smarter Homes LLC",
             "model": "Update Queue",
             "sw_version": SW_VERSION,
-            "via_device": (DOMAIN, entry.entry_id),
+            **hub_link(entry),
         }
 
     async def async_added_to_hass(self) -> None:
@@ -157,7 +158,7 @@ class QueuePendingSensor(SensorEntity):
             "manufacturer": "Smarter Homes LLC",
             "model": "Update Queue",
             "sw_version": SW_VERSION,
-            "via_device": (DOMAIN, entry.entry_id),
+            **hub_link(entry),
         }
 
     async def async_added_to_hass(self) -> None:
@@ -198,7 +199,7 @@ class QueueItemsSensor(SensorEntity):
             "manufacturer": "Smarter Homes LLC",
             "model": "Update Queue",
             "sw_version": SW_VERSION,
-            "via_device": (DOMAIN, entry.entry_id),
+            **hub_link(entry),
         }
 
     async def async_added_to_hass(self) -> None:
@@ -238,7 +239,7 @@ class QueueLastRunResultSensor(SensorEntity):
             "manufacturer": "Smarter Homes LLC",
             "model": "Update Queue",
             "sw_version": SW_VERSION,
-            "via_device": (DOMAIN, entry.entry_id),
+            **hub_link(entry),
         }
 
     async def async_added_to_hass(self) -> None:
@@ -281,7 +282,7 @@ class QueueHistorySensor(SensorEntity):
             "manufacturer": "Smarter Homes LLC",
             "model": "Update Queue",
             "sw_version": SW_VERSION,
-            "via_device": (DOMAIN, entry.entry_id),
+            **hub_link(entry),
         }
 
     async def async_added_to_hass(self) -> None:

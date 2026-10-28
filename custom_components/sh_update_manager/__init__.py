@@ -20,6 +20,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.event import async_track_time_interval
 
 try:
@@ -66,6 +67,7 @@ from .const import (
     URL_BASE,
     SW_VERSION,
 )
+from .device_link import hub_link, register_hub_device_id
 from .queue_manager import QueueCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -95,7 +97,7 @@ def queue_device_info(entry: ConfigEntry, queue_slug: str, queue_name: str) -> d
         "manufacturer": "Smarter Homes LLC",
         "model": "Update Queue",
         "sw_version": SW_VERSION,
-        "via_device": (DOMAIN, entry.entry_id),
+        **hub_link(entry),
     }
 
 
@@ -250,6 +252,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         return False
 
     # --- 7. Forward platform setup ---
+    # Register the hub first so queue devices can link to it by device id.
+    hub_device = dr.async_get(hass).async_get_or_create(
+        config_entry_id=entry.entry_id, **_hub_device_info(entry)
+    )
+    register_hub_device_id(entry, hub_device.id)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     # --- 8. Register update listener ---
