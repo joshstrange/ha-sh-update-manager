@@ -201,6 +201,7 @@ class NamedQueue:
         # The install currently in flight (sequential mode), so Skip can
         # cancel it instead of only relabelling the item.
         self._item_task: asyncio.Task | None = None
+        self._skip_requested = False
         # Set when a run was cut short by a restart or reload, so setup can
         # resume it (if resume_after_restart is on) once HA has started.
         self._interrupted = False
@@ -787,6 +788,7 @@ class NamedQueue:
                 self._current_run.skipped += 1
             self._current_item = None
             if self._item_task is not None and not self._item_task.done():
+                self._skip_requested = True
                 self._item_task.cancel()
             self._notify()
 
@@ -886,10 +888,16 @@ class NamedQueue:
                 current = asyncio.current_task()
                 if current is not None and current.cancelling():
                     raise  # the queue itself was stopped or shut down
-                # Only the install was cancelled: Skip was pressed.
-                success = True
+                if self._skip_requested:
+                    success = True  # Skip was pressed; not a failure
+                else:
+                    # Cancelled from outside, e.g. the device's integration
+                    # reloaded mid-install: a failure that Retry can redo.
+                    self._mark_failed(item, "Install was cancelled before it finished")
+                    success = False
             finally:
                 self._item_task = None
+                self._skip_requested = False
             self._current_item = None
             if not success and self.stop_on_failure:
                 self._state = QUEUE_STATE_STOPPED
@@ -948,7 +956,13 @@ class NamedQueue:
                     return True
             if attempt < self.max_retries:
                 await asyncio.sleep(5)
+        self._mark_failed(item)
+        return False
+
+    def _mark_failed(self, item: QueueItem, error: str | None = None) -> None:
         item.status = ITEM_STATUS_FAILED
+        if error is not None:
+            item.error = error
         item.completed_at = datetime.now()
         if item.started_at:
             delta = item.completed_at - item.started_at
@@ -958,7 +972,6 @@ class NamedQueue:
         self._failed_count += 1
         self._last_failure = item.entity_id
         self._notify()
-        return False
 
     async def _wait_for_completion(self, item: QueueItem, deadline: float) -> bool:
         loop = asyncio.get_running_loop()

@@ -55,6 +55,7 @@ class FakeInstaller:
         self.hass = hass
         self.hang: set[str] = set()
         self.gates: dict[str, asyncio.Event] = {}
+        self.cancel: set[str] = set()
         self.calls: list[str] = []
         self.started: dict[str, asyncio.Event] = {e: asyncio.Event() for e in ENTITIES}
 
@@ -65,6 +66,9 @@ class FakeInstaller:
         for entity_id in entity_ids:
             self.calls.append(entity_id)
             self.started[entity_id].set()
+            if entity_id in self.cancel:
+                # Like the device's integration reloading mid-install.
+                raise asyncio.CancelledError
             if entity_id in self.gates:
                 await self.gates[entity_id].wait()
             if entity_id in self.hang:
@@ -272,4 +276,20 @@ async def test_pause_holds_the_run_and_resume_continues_it(
 
     await queue.async_resume()
     await _wait_idle(queue)
+    assert _item(queue, ENTITIES[1]).status == ITEM_STATUS_COMPLETED
+
+
+async def test_install_cancelled_from_outside_is_a_failure_not_a_skip(
+    hass: HomeAssistant, installer: FakeInstaller
+) -> None:
+    """Only Skip may turn a cancelled install into a skip."""
+    installer.cancel.add(ENTITIES[0])
+    queue = NamedQueue(hass, _queue_config(install_timeout=3600))
+
+    await queue.async_start()
+    await _wait_idle(queue)
+
+    item = _item(queue, ENTITIES[0])
+    assert item.status == ITEM_STATUS_FAILED
+    assert "cancelled" in item.error
     assert _item(queue, ENTITIES[1]).status == ITEM_STATUS_COMPLETED
